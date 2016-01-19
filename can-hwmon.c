@@ -1,5 +1,5 @@
 /*
- * Generic HW/ASSY Version Reporting Driver
+ * CAN bus termination hardware status
  *
  * Copyright 2016 Tudor Design Systems, LLC.
  *
@@ -30,7 +30,7 @@ enum bustermon_bits {
 };
 
 struct bustermon_platform_data {
-    unsigned int gpios[MAX_CANS];   // array of gpios where index = bit
+    unsigned int gpios[MAX_CANS];   // array of gpios where index = canx termination
     char name[PLATFORM_NAME_SIZE];
 };
 
@@ -43,8 +43,9 @@ struct bustermon_data {
 };
 
 const char *const can_names[] = {
-    [CAN0]   = "can0",
-    [CAN1]   = "can1",
+    [CAN0]      = "can0",
+    [CAN1]      = "can1",
+    [MAX_CANS]  = "undef",
 };
 
 static ssize_t bustermon_show_state(struct device *dev,
@@ -56,7 +57,7 @@ static ssize_t bustermon_show_state(struct device *dev,
     
     for (cntr = CAN0; cntr < MAX_CANS; cntr++) {
         if (strncmp(attr->attr.name, can_names[cntr], strlen(can_names[cntr])) == 0)
-            state = gpio_get_value(data->gpios[cntr]);
+            state = (gpio_get_value(data->gpios[cntr])) ? 1 : 0;
     }
    
     return sprintf(buf, "%u\n", state);
@@ -67,27 +68,17 @@ static ssize_t bustermon_show_status(struct device *dev,
 {
     char *status = "";
     int cntr;
-    unsigned int state;
+    int match = MAX_CANS;
     struct bustermon_platform_data *data = dev_get_drvdata(dev);
        
     for (cntr = CAN0; cntr < MAX_CANS; cntr++) {
         if (strncmp(attr->attr.name, can_names[cntr], strlen(can_names[cntr])) == 0) {
-            state = gpio_get_value(data->gpios[cntr]);
-            switch (state) {
-                case 0:
-                    status = "OFF";
-                    break;
-                case 1:
-                    status = "ON";
-                    break;
-                default:
-                    status = "UNDEF";
-                    break;
-            };
+            status = (gpio_get_value(data->gpios[cntr])) ? "ON" : "OFF";
+            match = cntr;
         }
     }
     
-    return sprintf(buf, "%s termination is: %s\n", can_names[cntr], status);
+    return sprintf(buf, "%s termination is: %s\n", can_names[match], status);
 }
 
 static ssize_t bustermon_show_name(struct device *dev,
@@ -123,19 +114,17 @@ static struct bustermon_platform_data *bustermon_parse_dt(struct platform_device
 
     if (!node)
         return ERR_PTR(-ENODEV);
-    
-    length = of_property_count_strings(node, "gpio-names");
-
-    if (length < 1) {
-        dev_err(&pdev->dev, "there should be AT LEAST one revision...\n");
-        return ERR_PTR(-ENODATA); 
-    }
-    
+        
     length = of_count_phandle_with_args(node, "gpios", "#gpio-cells");
     
-    if (length != 4) {
-        dev_err(&pdev->dev, "four gpios required to make our index, no more, no less...\n"); 
+    if (length < 1) {
+        dev_err(&pdev->dev, "you need to define at least one gpio...\n"); 
         return ERR_PTR(-EINVAL);
+    }
+    
+    if (of_property_count_strings(node, "gpio-names") != of_count_phandle_with_args(node, "gpios", "#gpio-cells")) {
+        dev_err(&pdev->dev, "you need one name in gpio-names per triple in gpios...\n");
+        return ERR_PTR(-ENODATA); 
     }
     
     pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
@@ -217,7 +206,7 @@ static int bustermon_dt_probe(struct platform_device *pdev)
     ret = device_create_file(data->hwmon_dev, &dev_attr_name);
     if (ret) {
         dev_err(data->dev, "unable to create dev_attr_name sysfs file\n");
-        goto err_after_create;
+        goto err_free_mem;
     }
     
     ret = device_create_file(data->hwmon_dev, &dev_attr_can0_status);
@@ -260,7 +249,7 @@ unregister_can0:
 unregister_name:
     device_remove_file(data->hwmon_dev, &dev_attr_name);
     
-err_after_create:
+err_free_mem:
     hwmon_device_unregister(data->hwmon_dev);
     kfree(data);
     kfree(pdata);
